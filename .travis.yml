@@ -32,7 +32,7 @@ install:
   - (cd libcdb && make deb && sudo dpkg -i ../libcdb*.deb)
 
 before_script:
-  - (if [ "$CC" = "clang"]; then ln -sf $(which clang) /bin/gcc; fi)
+  - (if [ "$CC" = "clang"]; then sudo ln -sf $(which clang) /bin/gcc; fi)
 
 script:
   # Build and install the NPF packages.
