@@ -51,7 +51,7 @@ OBJS+=		libnpftest/npf_mbuf_subr.o
 OBJS+=		libnpftest/npf_test_subr.o
 
 all: $(OBJS)
-	$(CC) $^ -o $(BIN) $(LDFLAGS)
+	$(CC) $(LDFLAGS) $^ -o $(BIN)
 
 clean:
 	rm -rf $(BIN) *.o libnpftest/*.o

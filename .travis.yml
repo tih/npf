@@ -31,6 +31,9 @@ install:
   - git clone https://github.com/rmind/libcdb
   - (cd libcdb && make deb && sudo dpkg -i ../libcdb*.deb)
 
+before_script:
+  - (if [ "$CC" = "clang"]; then ln -sf $(which clang) /bin/gcc; fi)
+
 script:
   # Build and install the NPF packages.
   - (cd pkg && make deb && sudo dpkg -i ../libnpf*.deb ../npfctl*.deb)
