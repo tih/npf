@@ -664,7 +664,7 @@ npf_rule_alloc(npf_t *npf, const nvlist_t *rule)
 
 	if (NPF_DYNAMIC_RULE_P(rl->r_attr)) {
 		/* Priority of the dynamic rule. */
-		rl->r_priority = dnvlist_get_number(rule, "prio", 0);
+		rl->r_priority = (int)dnvlist_get_number(rule, "prio", 0);
 	} else {
 		/* The skip-to index.  No need to validate it. */
 		rl->r_skip_to = dnvlist_get_number(rule, "skip-to", 0);

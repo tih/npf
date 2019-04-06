@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2018 Mindaugas Rasiukevicius <rmind at netbsd org>
+ * Copyright (c) 2014-2019 Mindaugas Rasiukevicius <rmind at netbsd org>
  * Copyright (c) 2010-2013 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
@@ -77,38 +77,15 @@ __KERNEL_RCSID(0, "$NetBSD: npf_nat.c,v 1.45 2019/01/19 21:19:32 rmind Exp $");
 #include <sys/types.h>
 
 #include <sys/atomic.h>
-#include <sys/bitops.h>
 #include <sys/condvar.h>
 #include <sys/kmem.h>
 #include <sys/mutex.h>
 #include <sys/pool.h>
 #include <sys/proc.h>
-#include <sys/cprng.h>
-
-#include <net/pfil.h>
-#include <netinet/in.h>
 #endif
 
 #include "npf_impl.h"
 #include "npf_conn.h"
-
-/*
- * NPF portmap structure.
- */
-typedef struct {
-	u_int			p_refcnt;
-	uint32_t		p_bitmap[0];
-} npf_portmap_t;
-
-/* Portmap range: [ 1024 .. 65535 ] */
-#define	PORTMAP_FIRST		(1024)
-#define	PORTMAP_SIZE		((65536 - PORTMAP_FIRST) / 32)
-#define	PORTMAP_FILLED		((uint32_t)~0U)
-#define	PORTMAP_MASK		(31)
-#define	PORTMAP_SHIFT		(5)
-
-#define	PORTMAP_MEM_SIZE	\
-    (sizeof(npf_portmap_t) + (PORTMAP_SIZE * sizeof(uint32_t)))
 
 /*
  * NAT policy structure.
@@ -117,7 +94,7 @@ struct npf_natpolicy {
 	npf_t *			n_npfctx;
 	kmutex_t		n_lock;
 	LIST_HEAD(, npf_nat)	n_nat_list;
-	volatile u_int		n_refcnt;
+	volatile unsigned	n_refcnt;
 	npf_portmap_t *		n_portmap;
 	uint64_t		n_id;
 
@@ -207,7 +184,6 @@ npf_natpolicy_t *
 npf_nat_newpolicy(npf_t *npf, const nvlist_t *nat, npf_ruleset_t *rset)
 {
 	npf_natpolicy_t *np;
-	npf_portmap_t *pm;
 	const void *addr;
 	size_t len;
 
@@ -275,18 +251,13 @@ npf_nat_newpolicy(npf_t *npf, const nvlist_t *nat, npf_ruleset_t *rset)
 
 	/*
 	 * Inspect NAT policies in the ruleset for port map sharing.
-	 * Note that npf_ruleset_sharepm() will increase the reference count.
+	 * Note: npf_ruleset_sharepm() will increase the reference count.
 	 */
 	if (!npf_ruleset_sharepm(rset, np)) {
 		/* Allocate a new port map for the NAT policy. */
-		pm = kmem_zalloc(PORTMAP_MEM_SIZE, KM_SLEEP);
-		pm->p_refcnt = 1;
-		KASSERT((uintptr_t)pm->p_bitmap == (uintptr_t)pm + sizeof(*pm));
-		np->n_portmap = pm;
-	} else {
-		KASSERT(np->n_portmap != NULL);
-		KASSERT(np->n_portmap->p_refcnt > 0);
+		np->n_portmap = npf_portmap_create();
 	}
+	KASSERT(np->n_portmap != NULL);
 	return np;
 err:
 	mutex_destroy(&np->n_lock);
@@ -319,14 +290,13 @@ npf_nat_policyexport(const npf_natpolicy_t *np, nvlist_t *nat)
 }
 
 /*
- * npf_nat_freepolicy: free NAT policy and, on last reference, free portmap.
+ * npf_nat_freepolicy: free NAT policy and portmap.
  *
  * => Called from npf_rule_free() during the reload via npf_ruleset_destroy().
  */
 void
 npf_nat_freepolicy(npf_natpolicy_t *np)
 {
-	npf_portmap_t *pm = np->n_portmap;
 	npf_conn_t *con;
 	npf_nat_t *nt;
 
@@ -348,12 +318,10 @@ npf_nat_freepolicy(npf_natpolicy_t *np)
 		kpause("npfgcnat", false, 1, NULL);
 	}
 	KASSERT(LIST_EMPTY(&np->n_nat_list));
-	KASSERT(pm == NULL || pm->p_refcnt > 0);
 
-	/* Destroy the port map, on last reference. */
-	if (pm && atomic_dec_uint_nv(&pm->p_refcnt) == 0) {
+	if (np->n_portmap) {
 		KASSERT((np->n_flags & NPF_NAT_PORTMAP) != 0);
-		kmem_free(pm, PORTMAP_MEM_SIZE);
+		npf_portmap_putref(np->n_portmap);
 	}
 	mutex_destroy(&np->n_lock);
 	kmem_free(np, sizeof(npf_natpolicy_t));
@@ -366,8 +334,9 @@ npf_nat_freealg(npf_natpolicy_t *np, npf_alg_t *alg)
 
 	mutex_enter(&np->n_lock);
 	LIST_FOREACH(nt, &np->n_nat_list, nt_entry) {
-		if (nt->nt_alg == alg)
+		if (nt->nt_alg == alg) {
 			nt->nt_alg = NULL;
+		}
 	}
 	mutex_exit(&np->n_lock);
 }
@@ -414,21 +383,21 @@ npf_nat_sharepm(npf_natpolicy_t *np, npf_natpolicy_t *mnp)
 	if (np->n_alen && memcmp(&np->n_taddr, &mnp->n_taddr, np->n_alen)) {
 		return false;
 	}
-	mpm = mnp->n_portmap;
-	KASSERT(mpm == NULL || mpm->p_refcnt > 0);
 
 	/*
-	 * If NAT policy has an old port map - drop the reference
-	 * and destroy the port map if it was the last.
+	 * If NAT policy has an old port map - drop the reference,
+	 * potentially destroying that port map.
 	 */
-	if (mpm && atomic_dec_uint_nv(&mpm->p_refcnt) == 0) {
-		kmem_free(mpm, PORTMAP_MEM_SIZE);
+	if ((mpm = mnp->n_portmap) != NULL) {
+		npf_portmap_putref(mpm);
+		mnp->n_portmap = NULL;
 	}
 
 	/* Share the port map. */
 	pm = np->n_portmap;
-	atomic_inc_uint(&pm->p_refcnt);
+	npf_portmap_getref(pm);
 	mnp->n_portmap = pm;
+
 	return true;
 }
 
@@ -445,99 +414,10 @@ npf_nat_getid(const npf_natpolicy_t *np)
 }
 
 /*
- * npf_nat_getport: allocate and return a port in the NAT policy portmap.
- *
- * => Returns in network byte-order.
- * => Zero indicates failure.
- */
-static in_port_t
-npf_nat_getport(npf_natpolicy_t *np)
-{
-	npf_portmap_t *pm = np->n_portmap;
-	u_int n = PORTMAP_SIZE, idx, bit;
-	uint32_t map, nmap;
-
-	KASSERT((np->n_flags & NPF_NAT_PORTMAP) != 0);
-	KASSERT(pm->p_refcnt > 0);
-
-	idx = cprng_fast32() % PORTMAP_SIZE;
-	for (;;) {
-		KASSERT(idx < PORTMAP_SIZE);
-		map = pm->p_bitmap[idx];
-		if (__predict_false(map == PORTMAP_FILLED)) {
-			if (n-- == 0) {
-				/* No space. */
-				return 0;
-			}
-			/* This bitmap is filled, next. */
-			idx = (idx ? idx : PORTMAP_SIZE) - 1;
-			continue;
-		}
-		bit = ffs32(~map) - 1;
-		nmap = map | (1 << bit);
-		if (atomic_cas_32(&pm->p_bitmap[idx], map, nmap) == map) {
-			/* Success. */
-			break;
-		}
-	}
-	return htons(PORTMAP_FIRST + (idx << PORTMAP_SHIFT) + bit);
-}
-
-/*
- * npf_nat_takeport: allocate specific port in the NAT policy portmap.
- */
-static bool
-npf_nat_takeport(npf_natpolicy_t *np, in_port_t port)
-{
-	npf_portmap_t *pm = np->n_portmap;
-	uint32_t map, nmap;
-	u_int idx, bit;
-
-	KASSERT((np->n_flags & NPF_NAT_PORTMAP) != 0);
-	KASSERT(pm->p_refcnt > 0);
-
-	port = ntohs(port) - PORTMAP_FIRST;
-	idx = port >> PORTMAP_SHIFT;
-	bit = port & PORTMAP_MASK;
-	map = pm->p_bitmap[idx];
-	nmap = map | (1 << bit);
-	if (map == nmap) {
-		/* Already taken. */
-		return false;
-	}
-	return atomic_cas_32(&pm->p_bitmap[idx], map, nmap) == map;
-}
-
-/*
- * npf_nat_putport: return port as available in the NAT policy portmap.
- *
- * => Port should be in network byte-order.
- */
-static void
-npf_nat_putport(npf_natpolicy_t *np, in_port_t port)
-{
-	npf_portmap_t *pm = np->n_portmap;
-	uint32_t map, nmap;
-	u_int idx, bit;
-
-	KASSERT((np->n_flags & NPF_NAT_PORTMAP) != 0);
-	KASSERT(pm->p_refcnt > 0);
-
-	port = ntohs(port) - PORTMAP_FIRST;
-	idx = port >> PORTMAP_SHIFT;
-	bit = port & PORTMAP_MASK;
-	do {
-		map = pm->p_bitmap[idx];
-		KASSERT(map | (1 << bit));
-		nmap = map & ~(1 << bit);
-	} while (atomic_cas_32(&pm->p_bitmap[idx], map, nmap) != map);
-}
-
-/*
  * npf_nat_which: tell which address (source or destination) should be
  * rewritten given the combination of the NAT type and flow direction.
  */
-static inline u_int
+static inline unsigned
 npf_nat_which(const int type, bool forw)
 {
 	/*
@@ -553,7 +433,7 @@ npf_nat_which(const int type, bool forw)
 	}
 	CTASSERT(NPF_SRC == 0 && NPF_DST == 1);
 	KASSERT(forw == NPF_SRC || forw == NPF_DST);
-	return (u_int)forw;
+	return (unsigned)forw;
 }
 
 /*
@@ -667,7 +547,7 @@ npf_nat_create(npf_cache_t *npc, npf_natpolicy_t *np, npf_conn_t *con)
 
 	/* Get a new port for translation. */
 	if ((np->n_flags & NPF_NAT_PORTMAP) != 0) {
-		nt->nt_tport = npf_nat_getport(np);
+		nt->nt_tport = npf_portmap_get(np->n_portmap);
 	} else {
 		nt->nt_tport = np->n_tport;
 	}
@@ -685,7 +565,7 @@ static inline int
 npf_nat_translate(npf_cache_t *npc, npf_nat_t *nt, bool forw)
 {
 	const npf_natpolicy_t *np = nt->nt_natpolicy;
-	const u_int which = npf_nat_which(np->n_type, forw);
+	const unsigned which = npf_nat_which(np->n_type, forw);
 	const npf_addr_t *addr;
 	in_port_t port;
 
@@ -721,7 +601,7 @@ npf_nat_translate(npf_cache_t *npc, npf_nat_t *nt, bool forw)
 static inline int
 npf_nat_algo(npf_cache_t *npc, const npf_natpolicy_t *np, bool forw)
 {
-	const u_int which = npf_nat_which(np->n_type, forw);
+	const unsigned which = npf_nat_which(np->n_type, forw);
 	const npf_addr_t *taddr, *orig_addr;
 	npf_addr_t addr;
 
@@ -904,7 +784,7 @@ npf_nat_destroy(npf_nat_t *nt)
 
 	/* Return any taken port to the portmap. */
 	if ((np->n_flags & NPF_NAT_PORTMAP) != 0 && nt->nt_tport) {
-		npf_nat_putport(np, nt->nt_tport);
+		npf_portmap_put(np->n_portmap, nt->nt_tport);
 	}
 	npf_stats_inc(np->n_npfctx, NPF_STAT_NAT_DESTROY);
 
@@ -964,7 +844,7 @@ npf_nat_import(npf_t *npf, const nvlist_t *nat,
 
 	/* Take a specific port from port-map. */
 	if ((np->n_flags & NPF_NAT_PORTMAP) != 0 && nt->nt_tport &&
-	    !npf_nat_takeport(np, nt->nt_tport)) {
+	    !npf_portmap_take(np->n_portmap, nt->nt_tport)) {
 		pool_cache_put(nat_cache, nt);
 		return NULL;
 	}

@@ -102,7 +102,7 @@ bool		npf_rproc_exists_p(nl_config_t *, const char *);
 int		npf_rproc_insert(nl_config_t *, nl_rproc_t *);
 
 nl_nat_t *	npf_nat_create(int, unsigned, const char *);
-int		npf_nat_insert(nl_config_t *, nl_nat_t *, int);
+int		npf_nat_insert(nl_config_t *, nl_nat_t *);
 int		npf_nat_lookup(int, int, npf_addr_t *[2], in_port_t [2], int, int);
 int		npf_nat_setaddr(nl_nat_t *, int, npf_addr_t *, npf_netmask_t);
 int		npf_nat_setport(nl_nat_t *, in_port_t);

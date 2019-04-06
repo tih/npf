@@ -396,10 +396,12 @@ int
 npf_ruleset_add(int fd, const char *rname, nl_rule_t *rl, uint64_t *id)
 {
 	nvlist_t *rule_dict = rl->rule_dict;
+	const bool nat_rule = nvlist_exists_bool(rule_dict, "nat-rule");
 	nvlist_t *ret_dict;
 
 	nvlist_add_string(rule_dict, "ruleset-name", rname);
 	nvlist_add_number(rule_dict, "command", NPF_CMD_RULE_ADD);
+	nvlist_add_bool(rule_dict, "net-set", nat_rule);
 	if (nvlist_xfer_ioctl(fd, IOC_NPF_RULE, rule_dict, &ret_dict) == -1) {
 		return errno;
 	}
@@ -798,13 +800,13 @@ npf_nat_create(int type, unsigned flags, const char *ifname)
 	/* Translation type and flags. */
 	nvlist_add_number(rule_dict, "type", type);
 	nvlist_add_number(rule_dict, "flags", flags);
+	nvlist_add_bool(rule_dict, "nat-rule", true);
 	return (nl_nat_t *)rl;
 }
 
 int
-npf_nat_insert(nl_config_t *ncf, nl_nat_t *nt, int pri __unused)
+npf_nat_insert(nl_config_t *ncf, nl_nat_t *nt)
 {
-	nvlist_add_number(nt->rule_dict, "prio", (uint64_t)NPF_PRI_LAST);
 	nvlist_append_nvlist_array(ncf->ncf_dict, "nat", nt->rule_dict);
 	nvlist_destroy(nt->rule_dict);
 	free(nt);

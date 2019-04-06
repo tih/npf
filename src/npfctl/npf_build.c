@@ -541,7 +541,8 @@ npfctl_build_maprset(const char *name, int attr, const char *ifname)
 	/* Allow only "in/out" attributes. */
 	attr = NPF_RULE_GROUP | NPF_RULE_DYNAMIC | (attr & attr_di);
 	rl = npf_rule_create(name, attr, ifname);
-	npf_nat_insert(npf_conf, rl, NPF_PRI_LAST);
+	npf_rule_setprio(rl, NPF_PRI_LAST);
+	npf_nat_insert(npf_conf, rl);
 }
 
 /*
@@ -824,10 +825,12 @@ npfctl_build_natseg(int sd, int type, unsigned mflags, const char *ifname,
 	}
 
 	if (nt1) {
-		npf_nat_insert(npf_conf, nt1, NPF_PRI_LAST);
+		npf_rule_setprio(nt1, NPF_PRI_LAST);
+		npf_nat_insert(npf_conf, nt1);
 	}
 	if (nt2) {
-		npf_nat_insert(npf_conf, nt2, NPF_PRI_LAST);
+		npf_rule_setprio(nt2, NPF_PRI_LAST);
+		npf_nat_insert(npf_conf, nt2);
 	}
 }
 

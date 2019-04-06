@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2009-2014 The NetBSD Foundation, Inc.
+ * Copyright (c) 2009-2019 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
  * This material is based upon work partially supported by The
@@ -72,12 +72,14 @@
 struct npf_ruleset;
 struct npf_rule;
 struct npf_rprocset;
+struct npf_portmap;
 struct npf_nat;
 struct npf_conn;
 struct npf_config;
 
 typedef struct npf_ruleset	npf_ruleset_t;
 typedef struct npf_rule		npf_rule_t;
+typedef struct npf_portmap	npf_portmap_t;
 typedef struct npf_nat		npf_nat_t;
 typedef struct npf_rprocset	npf_rprocset_t;
 typedef struct npf_alg		npf_alg_t;
@@ -450,6 +452,16 @@ void		npf_state_tcp_sysinit(npf_t *);
 void		npf_state_tcp_sysfini(npf_t *);
 bool		npf_state_tcp(npf_cache_t *, npf_state_t *, int);
 int		npf_state_tcp_timeout(npf_t *, const npf_state_t *);
+
+/* Portmap. */
+npf_portmap_t *	npf_portmap_create(void);
+void		npf_portmap_destroy(npf_portmap_t *);
+void		npf_portmap_getref(npf_portmap_t *);
+void		npf_portmap_putref(npf_portmap_t *);
+
+in_port_t	npf_portmap_get(npf_portmap_t *);
+bool		npf_portmap_take(npf_portmap_t *, in_port_t);
+void		npf_portmap_put(npf_portmap_t *, in_port_t);
 
 /* NAT. */
 void		npf_nat_sysinit(void);
